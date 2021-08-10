@@ -6,7 +6,7 @@ import QtQuick.Dialogs 1.2
 
 Window {
     id:root
-    width: Screen.desktopAvailableWidth/2
+    width: Screen.width/2
     height: 300
     minimumWidth: 500
     minimumHeight: 300
@@ -211,6 +211,7 @@ Window {
             id: isOutputFile
             text: qsTr("输出结果到文件")
             height: parent.height-20
+            checked: true
         }
         Button{
             id: uploadBtn
@@ -247,7 +248,7 @@ Window {
                     if(isOutputFile.checked){
                         oss.clearFileContent(localInput.text+"/ListResult.txt")
                         for(var i=0;i<listResult.length;i++){
-                            oss.saveToFile(listResult[i]+"\r\n",localInput.text+"/ListResult.txt")
+                            oss.saveToFile(listResult[i].replace(netInput.text,"")+"\r\n",localInput.text+"/ListResult.txt")
                         }
                     }
                 }
@@ -261,8 +262,8 @@ Window {
 
             model: ListModel{
                 id:model
-                ListElement{text:qsTr("文件名+ETag")}
-                ListElement{text:qsTr("单文件名")}
+                ListElement{text:qsTr("文件名+ETag+Size")}
+                ListElement{text:qsTr("文件名+Size")}
 //                ListElement{text:qsTr("最后修改时间")}
 //                ListElement{text:qsTr("文件大小")}
             }

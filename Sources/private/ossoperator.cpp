@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QTextStream>
 #include <QSettings>
+#include <QDebug>
+#include "..\public\userqlogs.h"
 #include "alibabacloud/oss/OssClient.h"
 using namespace AlibabaCloud::OSS;
 
@@ -31,12 +33,12 @@ OSSOperator::~OSSOperator()
     QMetaObject::invokeMethod(OSSPathInput, "getText", Q_RETURN_ARG(QVariant, OSSPath));
     QMetaObject::invokeMethod(LocalPathInput, "getText", Q_RETURN_ARG(QVariant, LocalPath));
 
-    OSSOperator::saveConfig(iniPath,"Settings/AccessKeyId",AccessKeyId.toString());
-    OSSOperator::saveConfig(iniPath,"Settings/AccessKeySecret",AccessKeySecret.toString());
-    OSSOperator::saveConfig(iniPath,"Settings/Endpoint",Endpoint.toString());
-    OSSOperator::saveConfig(iniPath,"Settings/BucketName",BucketName.toString());
-    OSSOperator::saveConfig(iniPath,"Settings/OSSPath",OSSPath.toString());
-    OSSOperator::saveConfig(iniPath,"Settings/LocalPath",LocalPath.toString());
+    if(AccessKeyId!="")OSSOperator::saveConfig(iniPath,"Settings/AccessKeyId",AccessKeyId.toString());
+    if(AccessKeySecret!="")OSSOperator::saveConfig(iniPath,"Settings/AccessKeySecret",AccessKeySecret.toString());
+    if(Endpoint!="")OSSOperator::saveConfig(iniPath,"Settings/Endpoint",Endpoint.toString());
+    if(BucketName!="")OSSOperator::saveConfig(iniPath,"Settings/BucketName",BucketName.toString());
+    if(OSSPath!="")OSSOperator::saveConfig(iniPath,"Settings/OSSPath",OSSPath.toString());
+    if(LocalPath!="")OSSOperator::saveConfig(iniPath,"Settings/LocalPath",LocalPath.toString());
 }
 
 ClientConfiguration OSSOperator::conf;
@@ -53,6 +55,10 @@ void OSSOperator::initOSS(QString accessKeyId, QString accessKeySecret, QString 
     InitializeSdk();
 
     client = OssClient(Endpoint.toStdString(), AccessKeyId.toStdString(), AccessKeySecret.toStdString(), conf);
+
+
+
+    UserQLogs::saveToLog(QString::fromLatin1("初始化完的值: Endpoint:")+Endpoint+" AccessKeyId:"+AccessKeyId+" AccessKeySecret:"+AccessKeySecret);
 }
 
 QStringList OSSOperator::uploadToOSS(QString netPath, QString bucketName)
@@ -70,86 +76,99 @@ QStringList OSSOperator::downloadOSS(QString netPath, QString bucketName)
 QStringList OSSOperator::listOSSObj(QString netPath, QString bucketName)
 {
     QString BucketName = bucketName;
-    QString marker = netPath;
+    QString Prefix = netPath;
+    QString nextMarker="";
+    UserQLogs::saveToLog(QString::fromLatin1("开始列举文件."));
+    UserQLogs::saveToLog(QString::fromLatin1(" 桶名:")+BucketName
+                         +QString::fromLatin1(" 路径前缀:")+Prefix);
     /* 列举文件 */
     QStringList qs;
     ListObjectOutcome outcome;
     do {
         /* 列举文件 */
         ListObjectsRequest request(BucketName.toStdString());
-        /* 列举指定marker之后的文件 */
-        request.setPrefix(marker.toStdString());
+
+        /* 设置正斜线（/）为文件夹的分隔符 */
+        request.setDelimiter("/");
+        request.setPrefix(Prefix.toStdString());
+        request.setMarker(nextMarker.toStdString());
         outcome = client.ListObjects(request);
 
         if (!outcome.isSuccess()) {
             /* 异常处理  */
-            std::cout << "ListObjects fail" <<
-            ",code:" << outcome.error().Code() <<
-            ",message:" << outcome.error().Message() <<
-            ",requestId:" << outcome.error().RequestId() << std::endl;
+            QString errorMsg="ListObjects fail,code:"+QString::fromStdString(outcome.error().Code())
+                            +",message:"+QString::fromStdString(outcome.error().Message())
+                            +",requestId:"+QString::fromStdString(outcome.error().RequestId());
+            UserQLogs::saveToLog(errorMsg);
+
+            qDebug()<<errorMsg;
+
             qs=QStringList();
             break;
         }
+        UserQLogs::saveToLog(QString::fromLatin1("列举成功!"));
         for (const auto& object : outcome.result().ObjectSummarys()) {
             qs.append(QString::fromStdString(object.Key()));
         }
+        for (const auto& commonPrefix : outcome.result().CommonPrefixes()) {
+            qs.append(listOSSObj(QString::fromStdString(commonPrefix),BucketName));
+        }
+
+        nextMarker = QString::fromStdString(outcome.result().NextMarker());
     } while (outcome.result().IsTruncated());
+
+    foreach(QString s,qs){
+        if (s==""||s.endsWith("/"))
+            qs.removeOne(s);
+    }
+
     return qs;
 }
 
 QStringList OSSOperator::getOSSMeta(QString netPath, QString bucketName)
 {
     QString BucketName = bucketName;
-    QString marker = netPath;
+    QString Prefix = netPath;
 
     auto selectInfo = root->findChild<QObject *>("selectInfo");
     QVariant QVMetaType;
     QMetaObject::invokeMethod(selectInfo, "getSelectedText", Q_RETURN_ARG(QVariant, QVMetaType));
     QString MetaType=QVMetaType.toString();
 
+    UserQLogs::saveToLog(QString::fromLatin1("开始获取OSS文件元信息."));
+    UserQLogs::saveToLog(QString::fromLatin1("桶名:")+BucketName
+                         +QString::fromLatin1(" 路径前缀:")+Prefix
+                         +QString::fromLatin1(" 需要获取的元信息为:")+MetaType);
+
     /* 列举文件 */
+    QStringList qstr=listOSSObj(Prefix,BucketName);
     QStringList qs;
-    ListObjectOutcome outcome;
-    do {
-        /* 列举文件 */
-        ListObjectsRequest request(BucketName.toStdString());
-        /* 列举指定marker之后的文件 */
-        request.setPrefix(marker.toStdString());
-        outcome = client.ListObjects(request);
 
-        if (!outcome.isSuccess()) {
-            /* 异常处理  */
-            std::cout << "ListObjects fail" <<
-            ",code:" << outcome.error().Code() <<
-            ",message:" << outcome.error().Message() <<
-            ",requestId:" << outcome.error().RequestId() << std::endl;
+    for (QString object : qstr) {
+
+        /* 获取文件的全部元信息 */
+        auto outcome2 = client.HeadObject(BucketName.toStdString(), object.toStdString());
+
+        if (!outcome2.isSuccess()) {
+            /* 异常处理 */
+            QString errorMsg="HeadObject fail,code:"+QString::fromStdString(outcome2.error().Code())
+                            +",message:"+QString::fromStdString(outcome2.error().Message())
+                            +",requestId:"+QString::fromStdString(outcome2.error().RequestId());
+            UserQLogs::saveToLog(errorMsg);
+
+            qDebug()<<errorMsg;
             qs=QStringList();
-            break;
         }
-        for (const auto& object : outcome.result().ObjectSummarys()) {
-
-            /* 获取文件的全部元信息 */
-            auto outcome2 = client.HeadObject(BucketName.toStdString(), object.Key());
-
-            if (!outcome.isSuccess()) {
-                /* 异常处理 */
-                std::cout << "HeadObject fail" <<
-                ",code:" << outcome.error().Code() <<
-                ",message:" << outcome.error().Message() <<
-                ",requestId:" << outcome.error().RequestId() << std::endl;
-                ShutdownSdk();
-                return QStringList();
-            }
-            else {
-                auto headMeta = outcome2.result();
-                if(MetaType=="文件名+ETag"){
-                    qs.append(QString::fromStdString(object.Key())+" | "+QString::fromStdString(headMeta.ETag()));
-                }else if (MetaType=="单文件名"){
-                    qs.append(QString::fromStdString(object.Key()));
-                }
+        else {
+            //UserQLogs::saveToLog(QString::fromLatin1("获取 ")+QString::fromStdString(object.toStdString())+QString::fromLatin1(" 元信息成功!"));
+            auto headMeta = outcome2.result();
+            if(MetaType=="文件名+ETag+Size"){
+                qs.append(QString::fromStdString(object.toStdString()).replace(Prefix,"")+" | "+QString::fromStdString(headMeta.ETag()).toLower()+" | "+QString::number(headMeta.ContentLength()));
+            }else if (MetaType=="文件名+Size"){
+                qs.append(QString::fromStdString(object.toStdString()).replace(Prefix,"")+" | "+QString::number(headMeta.ContentLength()));
             }
         }
-    } while (outcome.result().IsTruncated());
+    }
 
     return qs;
 }
